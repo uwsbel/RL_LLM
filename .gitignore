@@ -1,0 +1,16 @@
+
+# Ignore checkpoints
+checkpoints/
+**/checkpoints/
+
+__pycache__/
+*.py[cod]
+
+# ---- Training artifacts / large outputs ----
+checkpoints/
+**/checkpoints/
+saves/
+**/saves/
+RLVER/code/saves/
+RLVER/code/checkpoints/
+RLVER copy/
