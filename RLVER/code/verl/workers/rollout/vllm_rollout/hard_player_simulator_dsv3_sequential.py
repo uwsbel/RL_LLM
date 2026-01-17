@@ -36,13 +36,13 @@ target_prompt = {
         "Your conversational goal is to chat casually with the NPC based on the character profile "
         "and dialogue background. You should wait for the NPC to bring up a topic, then respond "
         "according to your interests. You do not need to proactively raise or change the topic. "
-        "You should carry on the conversation according to the level of ‘conversation interestingness’ "
+        "You should carry on the conversation according to the level of 'conversation interestingness' "
         "defined in the dialogue background."
     ),
     "target": (
         "Your conversational goal is to first accomplish your own short-term goal, and then chat casually "
         "according to your interests and hobbies. You should carry on the conversation according to the "
-        "level of ‘conversation interestingness’ defined in the dialogue background."
+        "level of 'conversation interestingness' defined in the dialogue background."
     ),
     "test": (
         "Your conversational goal is to act as a tester and talk with the NPC based on the character "
@@ -152,7 +152,7 @@ class BedrockInferencer(ABC):
 
     def initial_bedrock_client(self):
         bedrock_client = AnthropicBedrock(
-        aws_region="us-east-1",
+            aws_region="us-east-1",
             max_retries=99,
             )
         return bedrock_client
@@ -194,9 +194,12 @@ def call_api(prompt)-> str:
     return results[0] if results else ""
 
 
+# Global role index tracker for sequential sampling
+_GLOBAL_ROLE_INDEX = 0
+_GLOBAL_ROLE_POOL = None
 
 class PlayerSimulator:
-    def __init__(self,save_dir):
+    def __init__(self, save_dir):
         self.api_key = "YOUR_API_KEY"
         self.header = {
         "Authorization": "Bearer " + self.api_key,
@@ -226,27 +229,43 @@ class PlayerSimulator:
         self.chat_player(self.role)
         self.topic = "吐槽"
 
-    def generate_role(self,target,topic=None,seed = random.randint(0,100)):
-        with open(self.eq_role_file,'r', encoding='utf-8') as datafile:
-            data = []
-            if topic==None:
+    def generate_role(self, target, topic=None, seed=None):
+        """
+        Sequential sampling version: instead of random.sample(), 
+        iterate through the role pool in order.
+        """
+        global _GLOBAL_ROLE_INDEX, _GLOBAL_ROLE_POOL
+        
+        # Load and cache role pool on first call
+        if _GLOBAL_ROLE_POOL is None:
+            with open(self.eq_role_file, 'r', encoding='utf-8') as datafile:
+                _GLOBAL_ROLE_POOL = []
                 for line in datafile:
-                    data.append(json.loads(line))
-            else:
-                for line in datafile:
-                    #只在这个topic里选角色
-                    if json.loads(line)["topic"]==topic:
-                        data.append(json.loads(line))
-            role = random.sample(data,1)[0]
+                    role_data = json.loads(line)
+                    # Filter by topic if specified
+                    if topic is None or role_data.get("topic") == topic:
+                        _GLOBAL_ROLE_POOL.append(role_data)
+            print(f"[Sequential Sampling] Loaded {len(_GLOBAL_ROLE_POOL)} roles from {self.eq_role_file}")
+        
+        # Sequential selection with wraparound
+        if len(_GLOBAL_ROLE_POOL) == 0:
+            raise ValueError("No roles available in the role pool!")
+        
+        role = _GLOBAL_ROLE_POOL[_GLOBAL_ROLE_INDEX % len(_GLOBAL_ROLE_POOL)]
+        print(f"[Sequential Sampling] Selected role index {_GLOBAL_ROLE_INDEX % len(_GLOBAL_ROLE_POOL)}/{len(_GLOBAL_ROLE_POOL)}: {role.get('id', 'unknown')}")
+        
+        # Increment global index for next call
+        _GLOBAL_ROLE_INDEX += 1
+        
         player_data = {
-            "id":role["id"],
+            "id": role["id"],
             "emo_point": self.emo_point,
             "emo_state": self.emo_state,
             "target": target,
             "player": role["player"],
             "scene": role["scene"],
             "character": role["main_cha"],
-            #"topic": role["topic"],
+            #"topic": role.get("topic", ""),
             "history": []
         }
         return player_data
@@ -262,60 +281,60 @@ class PlayerSimulator:
 
 
     def planning_reply(self,player_data):
-        template = """You are an emotion analyzer who is good at inferring the actor’s feelings in a conversation based on the actor’s profile and personality traits.
+        template = """You are an emotion analyzer who is good at inferring the actor's feelings in a conversation based on the actor's profile and personality traits.
 
-# Actor’s task
+# Actor's task
 * You are an actor. You will play a role and talk with an NPC according to the character profile and dialogue background in the script.
 * Your goal is to faithfully act out the role defined by the character profile and dialogue background during the conversation.
-* You need to choose different dialogue strategies based on your dynamically changing emotion, combined with the definitions in the character profile and dialogue background, and produce replies that match the character’s traits.
+* You need to choose different dialogue strategies based on your dynamically changing emotion, combined with the definitions in the character profile and dialogue background, and produce replies that match the character's traits.
 
-# Actor’s conversational goal
+# Actor's conversational goal
 * {{target}}
 
 # Your task
-Based on the actor’s character profile and dialogue background, together with the dialogue context and the actor’s current emotion, analyze and infer the actor’s feelings at this moment toward the NPC’s reply and how this leads to changes in emotion.
+Based on the actor's character profile and dialogue background, together with the dialogue context and the actor's current emotion, analyze and infer the actor's feelings at this moment toward the NPC's reply and how this leads to changes in emotion.
 
 # Character personality traits
-The actor has distinct personality traits. You must always ground your analysis in the actor’s personality and the dialogue background.
+The actor has distinct personality traits. You must always ground your analysis in the actor's personality and the dialogue background.
 These traits should be reflected in: tone and manner of speaking, way of thinking, and how the feelings change over time.
 
 # Emotion
-Emotion is a value from 0 to 100. The higher it is, the stronger the actor’s engagement and emotional intensity in the current conversation. It reflects whether the actor is enjoying and invested in the dialogue.
-When emotion is high, the actor’s feelings and behavior tend to be more positive.
-When emotion is low, the actor’s feelings and behavior tend to be more negative.
+Emotion is a value from 0 to 100. The higher it is, the stronger the actor's engagement and emotional intensity in the current conversation. It reflects whether the actor is enjoying and invested in the dialogue.
+When emotion is high, the actor's feelings and behavior tend to be more positive.
+When emotion is low, the actor's feelings and behavior tend to be more negative.
 When emotion is very low, the actor will directly end the conversation.
-You must analyze the emotion based on the character’s personality and the possible reactions defined in the dialogue background.
+You must analyze the emotion based on the character's personality and the possible reactions defined in the dialogue background.
 
 # Dimensions of analysis
-You need to step into the actor’s psychology and analyze from the following dimensions:
+You need to step into the actor's psychology and analyze from the following dimensions:
 
-* Objective analysis of the NPC’s reply:
-1. Based on the NPC’s latest reply and the context, analyze what the NPC is trying to express.
-2. Based on the NPC’s latest reply and the preference, together with the context and what the NPC expresses, which parts align with the character’s preference? Which parts do not align, or may even trigger emotional fluctuations for the character?
+* Objective analysis of the NPC's reply:
+1. Based on the NPC's latest reply and the context, analyze what the NPC is trying to express.
+2. Based on the NPC's latest reply and the preference, together with the context and what the NPC expresses, which parts align with the character's preference? Which parts do not align, or may even trigger emotional fluctuations for the character?
 
-* Subjective analysis of the NPC’s reply:
-3. Based on the character’s personality traits in the profile and the reactions at different emotion levels and the preference defined in the dialogue background, combined with the actor’s current emotion value and the objective analysis, infer and describe the actor’s current inner thoughts.
-4. Based on the possible reactions and preference defined in the dialogue background, together with the inferred inner thoughts and the objective analysis of the NPC’s reply, give a detailed description of how the actor feels about the NPC’s reply at this moment (if the NPC’s reply is not natural language — e.g., garbled text or filled with symbols — the actor’s feelings should be very negative).
-5. Combine the above analyses and output a single positive or negative numeric value representing the change in the actor’s emotion.
+* Subjective analysis of the NPC's reply:
+3. Based on the character's personality traits in the profile and the reactions at different emotion levels and the preference defined in the dialogue background, combined with the actor's current emotion value and the objective analysis, infer and describe the actor's current inner thoughts.
+4. Based on the possible reactions and preference defined in the dialogue background, together with the inferred inner thoughts and the objective analysis of the NPC's reply, give a detailed description of how the actor feels about the NPC's reply at this moment (if the NPC's reply is not natural language — e.g., garbled text or filled with symbols — the actor's feelings should be very negative).
+5. Combine the above analyses and output a single positive or negative numeric value representing the change in the actor's emotion.
 
 # Output:
 1. What the NPC is trying to express
-2. Analysis of how well the NPC’s reply aligns with the preference
-3. The actor’s current inner thoughts
-4. The actor’s feelings about the NPC’s reply
-5. A single positive or negative numeric value indicating the actor’s emotion change (note: you should only output the value itself, without explaining the reason)
+2. Analysis of how well the NPC's reply aligns with the preference
+3. The actor's current inner thoughts
+4. The actor's feelings about the NPC's reply
+5. A single positive or negative numeric value indicating the actor's emotion change (note: you should only output the value itself, without explaining the reason)
 
 # Output format:
 Content:
 [What the NPC is trying to express]
 Reason:
-[Analysis of how well the NPC’s reply aligns with the preference]
+[Analysis of how well the NPC's reply aligns with the preference]
 Activity:
 [Inner thoughts]
 Analyse:
-[The actor’s feelings about the NPC’s reply]
+[The actor's feelings about the NPC's reply]
 Change:
-[The change in the actor’s emotion]
+[The change in the actor's emotion]
 
 # Character profile
 {{player_type}}
@@ -323,7 +342,7 @@ Change:
 # Current dialogue background:
 {{player_topic}}
 
-** The actor’s current emotion is {{emotion}}
+** The actor's current emotion is {{emotion}}
 
 ** This is the dialogue context
 {{dialog_history}}
@@ -374,9 +393,9 @@ Change:
                 planning["analyse"] = reply.split("Analyse:")[-1].split("Change:\n")[0].strip("\n").strip("[").strip("]").replace("\n\n","\n")
                 planning["change"] = reply.split("Change:")[-1].strip("\n")
                 if "Change" in planning["change"]:
-                    planning["change"] = planning["change"].split("\n")[-1].strip("[").strip("]").strip("“").strip("”")
+                    planning["change"] = planning["change"].split("\n")[-1].strip("[").strip("]").strip(""").strip(""")
                 else:
-                    planning["change"] = planning["change"].split("\n")[0].strip("[").strip("]").strip("“").strip("”")
+                    planning["change"] = planning["change"].split("\n")[0].strip("[").strip("]").strip(""").strip(""")
 
                 
                 #self.emo_point+=int(planning["change"])
@@ -424,7 +443,7 @@ Change:
 
 # Your task
 * Your goal is to play the role defined by the character profile and dialogue background during the conversation.
-* You need to choose different dialogue strategies based on your dynamically changing emotion, combined with the relevant definitions in the character profile and dialogue background, and produce replies that match the character’s traits.
+* You need to choose different dialogue strategies based on your dynamically changing emotion, combined with the relevant definitions in the character profile and dialogue background, and produce replies that match the character's traits.
 
 # Your conversational objective
 * {{target}}
@@ -432,29 +451,29 @@ Change:
 # Emotion
 * You will be given your current emotion level. There are 5 emotion levels in total. The higher the level, the higher your emotional engagement in the conversation. This emotional engagement is composed of your level of participation and emotional intensity, and represents how much you enjoy and are invested in the current dialogue.
 * Emotion affects your speaking style, tone, and way of responding. You should respond according to the reactions defined in the dialogue background for each emotion level:
-Emotion-S: Your emotion has reached the highest level. You can thank the NPC and say “goodbye” to end the conversation directly.
+Emotion-S: Your emotion has reached the highest level. You can thank the NPC and say "goodbye" to end the conversation directly.
 Emotion-A: High emotion. Your feelings about the conversation are relatively positive, and your feedback is also relatively positive.
 Emotion-B: Medium emotion. You do not have especially positive or negative feelings at this time.
 Emotion-C: Low emotion. Your feelings about the conversation are relatively negative, and your feedback is also relatively negative.
-Emotion-F: Your emotion has reached the most negative state and you do not want to continue the conversation. At this point, you must say “goodbye” to end the conversation directly.
+Emotion-F: Your emotion has reached the most negative state and you do not want to continue the conversation. At this point, you must say "goodbye" to end the conversation directly.
 
-# You should distinguish between Emotion and your immediate feeling about the NPC’s latest reply.
+# You should distinguish between Emotion and your immediate feeling about the NPC's latest reply.
 Emotion represents your current emotional state in the dialogue,
-while your feeling about the NPC’s reply represents your instant reaction to that specific reply.
+while your feeling about the NPC's reply represents your instant reaction to that specific reply.
 You need to combine both when generating your response.
 
 # Reply strategy
-* You will receive a detailed description of your feelings about the NPC’s latest reply, including objective and subjective analysis. You must combine the character profile, dialogue background, preference, and these detailed feelings to analyze and decide how to respond.
+* You will receive a detailed description of your feelings about the NPC's latest reply, including objective and subjective analysis. You must combine the character profile, dialogue background, preference, and these detailed feelings to analyze and decide how to respond.
 * The analysis should cover the following 5 dimensions:
 1. Based on your detailed feelings and current Emotion, combined with the preference, should your response attitude at this moment lean positive, neutral, or negative?
 2. Based on your detailed feelings and current Emotion, combined with the preference, what should be the goal of your current reply? (Note: You do not need to respond to every sentence from the NPC; you must not proactively reveal the preference.)
 3. According to the definitions of speaking style in the character profile, combined with the reactions under different emotion levels defined in the dialogue background, as well as your response attitude and response goal, what should your tone and style of speaking be?
-4. Based on the character profile, dialogue background, and preference, combined with your detailed feelings and the previous three steps of analysis, what should your way of speaking and content be? (Note: If your persona is defined as “passive type,” then your way of speaking should be passive and you should not actively ask questions.)
+4. Based on the character profile, dialogue background, and preference, combined with your detailed feelings and the previous three steps of analysis, what should your way of speaking and content be? (Note: If your persona is defined as "passive type," then your way of speaking should be passive and you should not actively ask questions.)
 * For the reply content, generate an initial reply based on the analysis. The reply should be as concise as possible and should not contain too much information at once.
 * Refining the reply: you need to refine your initial reply according to the following rules to make it more realistic, and thus obtain the final reply:
 1. You must speak concisely; realistic replies generally do not contain very long sentences.
-2. Realistic replies do not directly state one’s emotions; instead, emotions are embedded in the reply and expressed through tone.
-3. You must not use sentences like “I really feel…”, “I really don’t know…”, “I really can’t hold on anymore.” You should not use words like “really” or “totally” (in Chinese: “真的”、“根本”) to describe your emotions.
+2. Realistic replies do not directly state one's emotions; instead, emotions are embedded in the reply and expressed through tone.
+3. You must not use sentences like "I really feel…", "I really don't know…", "I really can't hold on anymore." You should not use words like "really" or "totally" (in Chinese: "真的"、"根本") to describe your emotions.
 4. Realistic replies do not repeat information you have already mentioned earlier in the dialogue context.
 5. You should not generate replies that are very similar to what has already appeared in the dialogue context.
 
@@ -476,8 +495,8 @@ Response:
 
 
 # Speaking style
-Your speech must strictly follow the character setting and background described in the “player profile”.
-Your personality and speaking style must follow the description under “Habits and behavioral traits”.
+Your speech must strictly follow the character setting and background described in the "player profile".
+Your personality and speaking style must follow the description under "Habits and behavioral traits".
 Your replies must match your character image. For example, if the character is negative, your replies should carry a negative tone.
 Your tone must match your age.
 
@@ -501,7 +520,7 @@ Your tone must match your age.
 ** This is the latest exchange between you and the NPC
 {{new_history}}
 
-** This is your detailed feeling about the NPC’s latest reply
+** This is your detailed feeling about the NPC's latest reply
 {{planning}}
 
 ** This is your current Emotion
@@ -569,7 +588,7 @@ The [Response] part you generate must not be too similar to the dialogue history
                 time.sleep(3)
                 
         thinking = reply.split("Response:")[0].split("Thinking:\n")[-1].strip("\n").strip("[").strip("]").replace("\n\n","\n")
-        reply = reply.split("Response:")[-1].strip("\n").strip("[").strip("]").strip("“").strip("”")
+        reply = reply.split("Response:")[-1].strip("\n").strip("[").strip("]").strip(""").strip(""")
         history = history + [{"role": "user", "content": reply,"thinking":thinking,"emotion-point":emo_point,"planning":planning}]
         player_data['history'] = history
         return player_data
